@@ -108,9 +108,20 @@
 
   // --- advise: /<lang>/pick-and-mix/<slug> and /<lang>/bundle/<slug> ------
   // Prices are USD cents. A pick can be a multi-game pack (bundleGames: name + slug only).
+  // Only exact IDs here (product API); games without one are left to the advisor's
+  // ITAD-bundle / name matching, which marks name-only matches.
+  async function exactAppId(slug) {
+    try {
+      const p = await publicJson('/api/products/' + encodeURIComponent(slug) + '/en');
+      return p && p.steam && p.steam.id ? Number(p.steam.id) : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
   async function packGames(p) {
     if (!(p.bundleGames || []).length) return [{ title: p.name, appid: p.steam && p.steam.id ? Number(p.steam.id) : null }];
-    return Promise.all(p.bundleGames.map(async (g) => ({ title: g.name.trim(), appid: await appIdFor(g.slug, g.name.trim()) })));
+    return Promise.all(p.bundleGames.map(async (g) => ({ title: g.name.trim(), appid: await exactAppId(g.slug) })));
   }
 
   function bundlePage() {

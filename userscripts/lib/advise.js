@@ -23,12 +23,62 @@ function chunks(list, size) {
   return out;
 }
 
-// games: [{ title, appid|null }] -> Map(gameKey -> { appid, itadId, low, current, bundled })
-// Games without an appid are matched by title, and their appid comes back from ITAD.
+const norm = (s) => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+
+// Comparable form of a store page URL: host + path, without a trailing slash or a
+// language prefix like Fanatical's /en/.
+function pageKey(u) {
+  return u.host + u.pathname.replace(/^\/[a-z]{2}(?=\/)/, '').replace(/\/$/, '');
+}
+
+// The store page behind an ITAD bundle link. ITAD wraps it in an affiliate redirect:
+// ?u= for Humble (impact), ?ued= for Fanatical (awin).
+function bundlePageUrl(u) {
+  try {
+    const outer = new URL(u);
+    return pageKey(new URL(outer.searchParams.get('u') || outer.searchParams.get('ued') || u));
+  } catch (e) {
+    return null;
+  }
+}
+
+// Exact Steam appids for games the store names only by title. Finds this page's bundle on
+// ITAD via "bundles containing <one of its games>" (ended ones included: ITAD's expiry dates
+// can lag the store) and copies ITAD's curated mapping. Same-name games ("THRESHOLD",
+// "s.p.l.i.t") are why this beats title lookup. Sets g.appid in place; returns how many.
+async function fillAppIdsFromItadBundle(games, key) {
+  const q = '?key=' + encodeURIComponent(key);
+  const here = pageKey(new URL(location.href));
+  const unnamed = games.filter((g) => !g.appid);
+  for (const probe of unnamed.slice(0, 3)) {
+    const ids = await gmJson(ITAD + '/lookup/id/title/v1' + q, [probe.title]);
+    if (!ids[probe.title]) continue;
+    const bundles = await gmJson(ITAD + '/games/bundles/v2' + q + '&id=' + ids[probe.title] + '&country=IN&expired=true');
+    const b = (bundles || []).find((x) => bundlePageUrl(x.url) === here);
+    if (!b) continue;
+    const bGames = (b.tiers || []).flatMap((t) => t.games);
+    const apps = await gmJson(ITAD + '/lookup/shop/' + STEAM_SHOP + '/id/v1', bGames.map((x) => x.id));
+    const appByTitle = new Map();
+    for (const x of bGames) {
+      const app = (apps[x.id] || []).find((s) => s.startsWith('app/'));
+      if (app) appByTitle.set(norm(x.title), Number(app.slice(4)));
+    }
+    let filled = 0;
+    for (const g of unnamed) {
+      const app = appByTitle.get(norm(g.title));
+      if (app) { g.appid = app; filled++; }
+    }
+    return filled;
+  }
+  return 0;
+}
+
+// games: [{ title, appid|null }] -> Map(gameKey -> { appid, itadId, low, current, bundled, byName })
+// Games still without an appid are matched by title (byName: could be a same-name game).
 async function priceGames(games, key) {
   const q = '?key=' + encodeURIComponent(key);
   const info = new Map();
-  for (const g of games) info.set(gameKey(g), { appid: g.appid || null, itadId: null, low: null, current: null, bundled: null });
+  for (const g of games) info.set(gameKey(g), { appid: g.appid || null, itadId: null, low: null, current: null, bundled: null, byName: !g.appid });
 
   const withApp = games.filter((g) => g.appid);
   for (const part of chunks(withApp, 200)) {
@@ -76,7 +126,7 @@ function gameRow(g, p, status, perGame) {
   const cheaper = !owned && perGame && p.low !== null && p.low < perGame;
   return el('tr', { style: owned ? DIM : '' },
     el('td', { style: TD }, owned ? 'owned' : status === 'wish' ? '★' : ''),
-    el('td', { style: TD }, g.title + (p.appid ? '' : ' (?)')),
+    el('td', { style: TD }, g.title + (!p.appid ? ' (?)' : p.byName ? ' ~' : '')),
     el('td', { style: TD + 'text-align:right;' + (cheaper ? WARN : '') }, p.low === null ? '-' : inr(p.low)),
     el('td', { style: TD + 'text-align:right;' + DIM }, p.current === null ? '-' : inr(p.current)));
 }
@@ -159,7 +209,17 @@ async function runAdvice(store, ui) {
   ui.log('Reading bundle...');
   const bundle = await store.advise.getBundle();
   const items = bundle.kind === 'pick' ? bundle.pool : bundle.tiers.flatMap((t) => t.items);
-  const games = [...new Map(items.flatMap((i) => i.games).map((g) => [gameKey(g), g])).values()];
+  const raw = items.flatMap((i) => i.games);
+  // Fill exact appids first: gameKey depends on appid, so this must happen before deduping.
+  if (raw.some((g) => !g.appid)) {
+    ui.log('Matching games to Steam via IsThereAnyDeal\'s bundle data...');
+    try {
+      ui.log('  exact Steam IDs for ' + (await fillAppIdsFromItadBundle(raw, cfg.itadKey)) + ' game(s)');
+    } catch (e) {
+      ui.log('  ITAD bundle lookup failed (' + e.message + '), falling back to name matching');
+    }
+  }
+  const games = [...new Map(raw.map((g) => [gameKey(g), g])).values()];
   ui.log(bundle.name + ': ' + games.length + ' games. Looking up Steam India prices...');
 
   const [prices, steam, rate] = await Promise.all([priceGames(games, cfg.itadKey), steamUserData(), usdInrRate()]);
@@ -181,7 +241,7 @@ async function runAdvice(store, ui) {
   }, '▾ ' + bundle.name));
   ui.panel.appendChild(body);
   body.appendChild(el('div', { style: DIM }, 'USD→INR ' + rate.toFixed(2) + ' +' + Math.round(ctx.fx.fxMarkup * 100) + '% card/PayPal' +
-    (ctx.fx.taxRate ? ', +' + Math.round(ctx.fx.taxRate * 100) + '% tax' : '') + '. ★ wishlisted, (?) not matched to Steam.'));
+    (ctx.fx.taxRate ? ', +' + Math.round(ctx.fx.taxRate * 100) + '% tax' : '') + '. ★ wishlisted, ~ matched by name only (could be a same-name game), (?) not found on Steam.'));
   (bundle.kind === 'pick' ? renderPick : renderFixed)(bundle, ctx, body);
 }
 
