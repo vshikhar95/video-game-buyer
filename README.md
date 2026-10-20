@@ -19,6 +19,7 @@ Opens a panel on a bundle page that prices every game you don't own against its 
 
 - **Fixed bundles:** per tier, the cost per unowned game, and which games have sold for less on Steam India.
 - **Pick & mix:** the price per game for taking every unowned pick, and a recommendation that skips picks whose India lows are below the per-pick cost. Filler picks are suggested when a bigger tier is cheaper overall.
+- **Fanatical pick & mix cart:** tick picks (or use All / Unowned / Recommended / None), check the live cost, then **Update cart** adds and removes picks in your Fanatical basket to match. Checkout stays manual.
 
 Games are matched to Steam by exact ID where the store or IsThereAnyDeal's bundle data has one, otherwise by name confirmed against the developer/publisher; `~` marks a name-only match and `(?)` an unresolved one. Confident matches are cached for 30 days, so repeat visits skip the lookups; prices and ownership are always fetched fresh.
 
