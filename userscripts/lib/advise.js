@@ -261,7 +261,8 @@ function renderPick(bundle, ctx, out) {
   const allGames = candidates.reduce((s, c) => s + c.unowned.length, 0);
   out.appendChild(el('div', { style: 'margin-top:6px;font-weight:bold;' }, 'Take all unowned: ' +
     (!all || !allGames ? 'not possible with this pool'
-      : candidates.length + ' picks for ' + inr(all.cost) + ' = ' + inr(all.cost / allGames) + '/game (' + allGames + ' games)' + filler(candidates.length, all.buy))));
+      // Per pick, like the Recommended line and the selection summary (a pick can hold several games).
+      : candidates.length + ' picks for ' + inr(all.cost) + ' (' + inr(all.cost / candidates.length) + '/pick, ' + allGames + ' games)' + filler(candidates.length, all.buy))));
 
   const best = bestPicks(candidates, tiers, picks.length);
   // Recommended selection includes any filler picks: the next most valuable remaining ones.
