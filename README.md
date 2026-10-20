@@ -8,7 +8,19 @@ Install [Tampermonkey](https://www.tampermonkey.net/), then click the install li
 
 | Script | Runs on | Install |
 |---|---|---|
+| Bundle Advisor | Fanatical pick & mix and bundle pages, Humble bundle pages | [install](https://raw.githubusercontent.com/vshikhar95/video-game-buyer/main/userscripts/bundle-advisor.user.js) |
 | Steam Key Redeemer | Humble Keys page or a bundle's `/downloads?key=` page, Fanatical orders, IndieGala library, Steam's key activation page | [install](https://raw.githubusercontent.com/vshikhar95/video-game-buyer/main/userscripts/steam-key-redeemer.user.js) |
+
+Both use your Steam login in the same browser (store.steampowered.com) to know what you own and have wishlisted.
+
+### Bundle Advisor
+
+Opens a panel on a bundle page that prices every game you don't own against its Steam India historical low (from [IsThereAnyDeal](https://isthereanydeal.com/)), in INR:
+
+- **Fixed bundles:** per tier, the cost per unowned game, and which games have sold for less on Steam India.
+- **Pick & mix:** the price per game for taking every unowned pick, and a recommendation that skips picks whose India lows are below the per-pick cost. Filler picks are suggested when a bigger tier is cheaper overall.
+
+Prices are converted at the live USD rate plus a 5% card/PayPal markup (change it by adding `"fxMarkup": 0.04` in the script's Storage tab in Tampermonkey). Humble's page prices already include GST for Indian visitors; Fanatical charges none. On first run it asks for an IsThereAnyDeal API key.
 
 ### Steam Key Redeemer
 
@@ -20,7 +32,22 @@ Click **Scan & Redeem Keys** on a supported page. For each Steam key you haven't
 
 Already-revealed keys and non-Steam keys are skipped.
 
-Needs the [Augmented Steam](https://augmentedsteam.com/) extension (its "Activate Multiple Products" link on Steam's activation page). On first run it asks for a Steam Web API key, your SteamID64, the Google Apps Script web app URL and its ingest token. These are kept in Tampermonkey's storage, not in this repo.
+Needs the [Augmented Steam](https://augmentedsteam.com/) extension (its "Activate Multiple Products" link on Steam's activation page). On first run it asks for the Google Apps Script web app URL and its ingest token. These are kept in Tampermonkey's storage, not in this repo.
+
+## Code layout
+
+```
+userscripts/
+  lib/core.js       shared helpers, store registry, panel UI, Steam ownership, Google Sheet
+  lib/math.js       pricing math (node userscripts/lib/math.test.js)
+  lib/redeem.js     store-agnostic redeem flow
+  lib/advise.js     store-agnostic advisor flow
+  stores/*.js       one file per store
+  *.user.js         thin entry points: header + @require list
+  bump.sh           sets a script's @version and its @require ?v= together
+```
+
+To add a store: write `stores/<store>.js` calling `registerStore({ id, name, redeem?, advise? })` (the contract is documented at the top of `lib/core.js`), then add its `@match` and `@require` lines to each script that should use it and bump that script's version with `bump.sh`.
 
 ## verdict.py
 
