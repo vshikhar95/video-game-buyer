@@ -112,6 +112,39 @@ async function resolveByName(games) {
   }
 }
 
+// --- Match cache ---------------------------------------------------------------
+// Confident title -> appid matches (exact from ITAD's bundle data, or confirmed by developer/
+// publisher) are kept in Tampermonkey storage for 30 days, keyed by title + makers so they
+// carry across bundles. Name-only and ambiguous results aren't cached, so they get retried
+// (e.g. once ITAD adds the bundle). Prices and ownership are never cached.
+const MATCH_CACHE_KEY = 'matchCache';
+const MATCH_TTL_MS = 30 * 864e5;
+const matchKey = (g) => norm(g.title) + '|' + (g.makers || []).map(norm).sort().join(',');
+
+function loadMatchCache(now = Date.now()) {
+  const cache = GM_getValue(MATCH_CACHE_KEY, {}) || {};
+  for (const [k, v] of Object.entries(cache)) if (!v || now - v.at > MATCH_TTL_MS) delete cache[k];
+  return cache;
+}
+
+// Fills appids from the cache; returns how many.
+function applyMatchCache(games, cache) {
+  let hits = 0;
+  for (const g of games) {
+    const c = !g.appid && cache[matchKey(g)];
+    if (c) { g.appid = c.appid; g.match = c.match === 'maker' ? 'maker' : undefined; hits++; }
+  }
+  return hits;
+}
+
+// Stores the confident matches among `resolved` (games that started without an appid).
+function saveMatchCache(resolved, cache, now = Date.now()) {
+  for (const g of resolved) {
+    if (g.appid && (g.match === undefined || g.match === 'maker')) cache[matchKey(g)] = { appid: g.appid, match: g.match || 'exact', at: now };
+  }
+  GM_setValue(MATCH_CACHE_KEY, cache);
+}
+
 // games: [{ title, appid|null, match? }] -> Map(gameKey -> { appid, itadId, low, current, bundled, match })
 // match: undefined = exact ID from the store or ITAD's bundle data, 'maker' = confirmed by
 // developer/publisher, 'name' = name only, 'ambiguous' = several same-name games (not guessed).
@@ -256,7 +289,13 @@ async function runAdvice(store, ui) {
   const bundle = await store.advise.getBundle();
   const items = bundle.kind === 'pick' ? bundle.pool : bundle.tiers.flatMap((t) => t.items);
   const raw = items.flatMap((i) => i.games);
-  // Fill exact appids first: gameKey depends on appid, so this must happen before deduping.
+  // Fill appids first: gameKey depends on appid, so this must happen before deduping.
+  const unresolved = raw.filter((g) => !g.appid);
+  const cache = loadMatchCache();
+  if (unresolved.length) {
+    const hits = applyMatchCache(unresolved, cache);
+    if (hits) ui.log('Steam IDs for ' + hits + ' game(s) from the 30-day match cache');
+  }
   if (raw.some((g) => !g.appid)) {
     ui.log('Matching games to Steam via IsThereAnyDeal\'s bundle data...');
     try {
@@ -269,6 +308,7 @@ async function runAdvice(store, ui) {
       await resolveByName(raw);
     }
   }
+  if (unresolved.length) saveMatchCache(unresolved, cache);
   const games = [...new Map(raw.map((g) => [gameKey(g), g])).values()];
   ui.log(bundle.name + ': ' + games.length + ' games. Looking up Steam India prices...');
 
