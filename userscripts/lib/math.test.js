@@ -16,6 +16,16 @@ assert.strictEqual(bestPicks(c, [{ qty: 2, price: 200 }]).n, 2); // 3rd pick's 5
 assert.strictEqual(bestPicks(c, [{ qty: 2, price: 40 }]).n, 4); // 20 per pick: in-between counts allowed
 assert.strictEqual(bestPicks(c.slice(0, 1), [{ qty: 2, price: 200 }]), null);
 assert.strictEqual(pickCost(1, [{ qty: 3, price: 600 }]), null);
-assert.strictEqual(pickCost(6, [{ qty: 3, price: 600 }, { qty: 5, price: 900 }]), 1080); // 6 * 900/5
+assert.deepStrictEqual(pickCost(6, [{ qty: 3, price: 600 }, { qty: 5, price: 900 }]), { cost: 1080, buy: 6 }); // 6 * 900/5
+
+// Popular Picks (INR): 6 wanted picks cost 1,077 at the 5-tier rate, but a filler pick
+// reaches the 7-tier for 1,047 when the pool has one.
+const pp = [{ qty: 3, price: 598 }, { qty: 5, price: 897 }, { qty: 7, price: 1047 }];
+assert.deepStrictEqual(pickCost(6, pp, 9), { cost: 1047, buy: 7 });
+assert.strictEqual(Math.round(pickCost(6, pp, 6).cost), 1076); // no filler available
+// One wanted pick in a 1-pick-minimum pool can't be bought without fillers at a 3-minimum.
+assert.deepStrictEqual(pickCost(1, pp, 9), { cost: 598, buy: 3 });
+const r2 = bestPicks([{ value: 900 }], pp, 9); // 1 great pick + 2 fillers beats nothing
+assert.deepStrictEqual([r2.n, r2.buy, r2.cost], [1, 3, 598]);
 
 console.log('math ok');

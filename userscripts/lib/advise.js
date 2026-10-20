@@ -122,18 +122,20 @@ function renderPick(bundle, ctx, out) {
   out.appendChild(el('div', {}, 'Tiers: ' + tiers.map((t) => t.qty + ' for ' + inr(t.price)).join(', ') + '. ' +
     candidates.length + ' of ' + bundle.pool.length + ' picks have games you don\'t own.'));
 
-  const allCost = pickCost(candidates.length, tiers);
+  // Extra picks beyond the wanted ones, added only to reach a cheaper tier.
+  const filler = (n, buy) => (buy > n ? ' (+' + (buy - n) + ' filler pick' + (buy - n > 1 ? 's' : '') + ' to reach the ' + buy + '-pick tier)' : '');
+  const all = pickCost(candidates.length, tiers, bundle.pool.length);
   const allGames = candidates.reduce((s, c) => s + c.unowned.length, 0);
   out.appendChild(el('div', { style: 'margin-top:6px;font-weight:bold;' }, 'Take all unowned: ' +
-    (allCost === null ? 'not enough picks for the first tier'
-      : candidates.length + ' picks for ' + inr(allCost) + ' = ' + inr(allCost / allGames) + '/game (' + allGames + ' games)')));
+    (!all || !allGames ? 'not possible with this pool'
+      : candidates.length + ' picks for ' + inr(all.cost) + ' = ' + inr(all.cost / allGames) + '/game (' + allGames + ' games)' + filler(candidates.length, all.buy))));
 
-  const best = bestPicks(candidates, tiers);
-  if (!best) return out.appendChild(el('div', { style: WARN }, 'Skip: fewer unowned picks than the first tier needs.'));
+  const best = bestPicks(candidates, tiers, bundle.pool.length);
+  if (!best) return out.appendChild(el('div', { style: WARN }, 'Skip: not enough picks for the first tier.'));
   const picked = new Set(best.picks);
   out.appendChild(el('div', { style: 'margin-top:6px;font-weight:bold;' + (best.value > best.cost ? GOOD : WARN) },
     'Recommended: ' + best.n + ' picks for ' + inr(best.cost) + ' (' + inr(best.perPick) + '/pick), India lows ' + inr(best.value) +
-    (best.value > best.cost ? '' : ' → not worth it')));
+    filler(best.n, best.buy) + (best.value > best.cost ? '' : ' → not worth it')));
 
   const rows = [...candidates].sort((a, b) => b.value - a.value).map((c) => {
     const take = picked.has(c);
@@ -170,11 +172,17 @@ async function runAdvice(store, ui) {
     },
   };
 
+  // Click the title to collapse the panel out of the way.
+  const body = el('div', {});
   ui.panel.textContent = '';
-  ui.panel.appendChild(el('div', { style: 'font-weight:bold;font-size:13px;' }, bundle.name));
-  ui.panel.appendChild(el('div', { style: DIM }, 'USD→INR ' + rate.toFixed(2) + ' +' + Math.round(ctx.fx.fxMarkup * 100) + '% card/PayPal' +
+  ui.panel.appendChild(el('div', {
+    style: 'font-weight:bold;font-size:13px;cursor:pointer;', title: 'Click to collapse/expand',
+    onclick: () => { body.style.display = body.style.display === 'none' ? '' : 'none'; },
+  }, '▾ ' + bundle.name));
+  ui.panel.appendChild(body);
+  body.appendChild(el('div', { style: DIM }, 'USD→INR ' + rate.toFixed(2) + ' +' + Math.round(ctx.fx.fxMarkup * 100) + '% card/PayPal' +
     (ctx.fx.taxRate ? ', +' + Math.round(ctx.fx.taxRate * 100) + '% tax' : '') + '. ★ wishlisted, (?) not matched to Steam.'));
-  (bundle.kind === 'pick' ? renderPick : renderFixed)(bundle, ctx, ui.panel);
+  (bundle.kind === 'pick' ? renderPick : renderFixed)(bundle, ctx, body);
 }
 
 // Runs on page load and again whenever the URL changes (Fanatical is a single-page app).
