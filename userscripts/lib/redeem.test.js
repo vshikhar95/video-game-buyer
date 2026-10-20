@@ -8,13 +8,17 @@ const store = {};
 const sheetRows = [];
 const replies = {}; // key -> list of Steam replies, consumed in order ('STALE' = logged-out error page)
 const opened = [];
+const listeners = {};
 let reloads = 0;
 const ctx = {
-  console, URLSearchParams, Date,
+  console, URLSearchParams, Date, setTimeout,
   document: { cookie: 'sessionid=abc123; other=1' },
   location: { reload: () => { reloads++; } },
   GM_getValue: (k, d) => (k in store ? JSON.parse(JSON.stringify(store[k])) : d),
-  GM_setValue: (k, v) => { store[k] = v; },
+  // Value-change listeners fire for every write, as if from another tab (remote).
+  GM_setValue: (k, v) => { const old = store[k]; store[k] = v; (listeners[k] || []).forEach((l) => l && l(k, old, v, true)); },
+  GM_addValueChangeListener: (k, fn) => { (listeners[k] = listeners[k] || []).push(fn); return k + ':' + (listeners[k].length - 1); },
+  GM_removeValueChangeListener: (id) => { const [k, i] = id.split(':'); listeners[k][i] = null; },
   GM_openInTab: (url, opts) => { opened.push(opts); },
   // Sheet writes go through GM_xmlhttpRequest; record the rows and say ok.
   GM_xmlhttpRequest: (o) => {
@@ -101,17 +105,22 @@ const log = (m) => logs.push(m);
   assert.deepStrictEqual(getQueue(), []);
   assert.strictEqual(store.sessionReloads.n, 0); // a working session resets the guard
 
-  // Store pages: open the Steam tab in the background once; not while one is running or paused.
-  store.activationWorker = null;
-  assert.match(ensureWorker(), /^$/); // empty queue: nothing to do
+  // Store pages: no Steam tab answers the ping -> open one in the background, once.
+  assert.strictEqual(await ensureWorker(50), ''); // empty queue: nothing to do
   enqueueKeys([{ title: 'TW', key: 'W' }]);
-  assert.match(ensureWorker(), /background tab/);
+  assert.match(await ensureWorker(50), /background tab/);
   assert.deepStrictEqual(JSON.parse(JSON.stringify(opened)), [{ active: false, insert: true }]);
-  assert.match(ensureWorker(), /Steam tab is activating/);
+  assert.match(await ensureWorker(50), /is opening/); // a second page right after: no second tab
   assert.strictEqual(opened.length, 1);
-  store.activationWorker = null;
+  // A live Steam tab answers the ping: no new tab.
+  store.activationTabOpening = 0;
+  listeners.activationPing = [(k, o, nonce) => ctx.GM_setValue('activationPong', nonce)];
+  assert.match(await ensureWorker(50), /Steam tab is activating/);
+  assert.strictEqual(opened.length, 1);
+  // During a rate-limit pause: no ping, no tab.
+  listeners.activationPing = [];
   store.rateLimitedUntil = Date.now() + 60000;
-  assert.match(ensureWorker(), /rate limit/);
+  assert.match(await ensureWorker(50), /rate limit/);
   assert.strictEqual(opened.length, 1);
 
   console.log('activation queue ok');

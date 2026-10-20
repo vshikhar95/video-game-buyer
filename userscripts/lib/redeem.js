@@ -130,7 +130,7 @@ async function runScan(store, log) {
 
   // Base games first so DLC finds its base game already activated.
   const added = enqueueKeys([...baseItems, ...dlcItems]);
-  if (added) log('Queued ' + added + ' key(s) for activation. ' + ensureWorker());
+  if (added) log('Queued ' + added + ' key(s) for activation. ' + (await ensureWorker()));
 }
 
 function initStorePage() {
@@ -155,8 +155,10 @@ function initStorePage() {
 const QUEUE_KEY = 'activationQueue';
 const PAUSE_KEY = 'rateLimitedUntil';
 const LOCK_KEY = 'activationLock';
-const WORKER_KEY = 'activationWorker'; // heartbeat of the Steam tab working the queue
-const WORKER_FRESH_MS = 90 * 1000; // background tabs may only tick once a minute
+const PING_KEY = 'activationPing'; // store page asks "is a Steam tab working the queue?"
+const PONG_KEY = 'activationPong'; // a live Steam tab answers with the same value
+const OPENING_KEY = 'activationTabOpening'; // stops two store pages opening two tabs at once
+const PING_TIMEOUT_MS = 2000;
 const RELOADS_KEY = 'sessionReloads';
 const REGISTER_URL = 'https://store.steampowered.com/account/registerkey/';
 const RATE_LIMIT_PAUSE_MS = 60 * 60 * 1000; // Steam lifts its activation limit about an hour later
@@ -223,21 +225,33 @@ async function activateKey(key) {
 }
 
 // --- Worker tab ---------------------------------------------------------------
-// The Steam activation tab that works the queue announces itself; store pages hand keys to it,
-// or open one in the background when none is running.
-function workerAlive() {
-  const w = GM_getValue(WORKER_KEY, null);
-  return !!w && Date.now() - w.at < WORKER_FRESH_MS;
+// The Steam activation tab that works the queue answers pings through Tampermonkey storage
+// (userscripts can't list tabs). No answer means no working tab (closed, frozen or discarded),
+// so the store page opens one in the background.
+function pingWorker(timeoutMs) {
+  return new Promise((resolve) => {
+    const nonce = Math.random().toString(36).slice(2);
+    let listener = null;
+    const done = (alive) => {
+      if (listener !== null) GM_removeValueChangeListener(listener);
+      listener = null;
+      resolve(alive);
+    };
+    listener = GM_addValueChangeListener(PONG_KEY, (name, oldVal, newVal) => { if (newVal === nonce) done(true); });
+    setTimeout(() => done(false), timeoutMs);
+    GM_setValue(PING_KEY, nonce);
+  });
 }
 
 // -> a short status line for the panel
-function ensureWorker() {
+async function ensureWorker(timeoutMs = PING_TIMEOUT_MS) {
   const n = getQueue().length;
   const until = GM_getValue(PAUSE_KEY, 0);
   if (!n) return '';
   if (Date.now() < until) return 'Steam rate limit: ' + n + ' key(s) will activate after ' + fmtTime(until) + '.';
-  if (workerAlive()) return 'A Steam tab is activating them.';
-  GM_setValue(WORKER_KEY, { id: 'opening', at: Date.now() }); // other pages: don't open a second one
+  if (await pingWorker(timeoutMs)) return 'A Steam tab is activating them.';
+  if (Date.now() - GM_getValue(OPENING_KEY, 0) < 15000) return 'A Steam tab is opening to activate them.';
+  GM_setValue(OPENING_KEY, Date.now());
   GM_openInTab(REGISTER_URL, { active: false, insert: true });
   return 'Opened Steam\'s activation page in a background tab to activate them.';
 }
@@ -323,16 +337,16 @@ async function processQueue(log) {
 function initRegisterKeyPage() {
   let ui = null;
   const log = (m) => { if (!ui) ui = makePanel({ width: 440 }); ui.log(m); };
-  const beat = () => GM_setValue(WORKER_KEY, { id: tabId, at: Date.now() });
-  beat();
-  window.addEventListener('pagehide', () => {
-    const w = GM_getValue(WORKER_KEY, null);
-    if (w && w.id === tabId) GM_setValue(WORKER_KEY, null);
+  // Answer store pages' pings, and take any keys they just queued.
+  GM_addValueChangeListener(PING_KEY, (name, oldVal, nonce, remote) => {
+    if (!remote) return;
+    GM_setValue(PONG_KEY, nonce);
+    tick();
   });
 
   let pausedHere = false;
+  // Reads only; nothing is written unless there's work.
   const tick = () => {
-    beat();
     const until = GM_getValue(PAUSE_KEY, 0);
     if (Date.now() < until) { pausedHere = true; return; }
     // Coming out of a rate-limit pause on an hour-old page: refresh first for a fresh session.
@@ -340,6 +354,7 @@ function initRegisterKeyPage() {
     if (getQueue().length && getConfig(SHEET_CONFIG)) processQueue(log);
   };
   if (getQueue().length) log('Activation queue: ' + getQueue().length + ' key(s).');
+  GM_setValue(OPENING_KEY, 0);
   tick();
   // A short interval (not one long timer) so it resumes promptly after the laptop sleeps.
   setInterval(tick, 20000);
@@ -349,8 +364,8 @@ function initRegisterKeyPage() {
 }
 
 // On store pages: if keys are waiting, make sure a Steam tab is activating them and say so briefly.
-function showQueueNotice() {
-  const status = ensureWorker();
+async function showQueueNotice() {
+  const status = await ensureWorker();
   if (!status) return;
   const ui = makePanel({ top: 140, width: 300 });
   ui.log(getQueue().length + ' key(s) waiting to activate on Steam. ' + status);
