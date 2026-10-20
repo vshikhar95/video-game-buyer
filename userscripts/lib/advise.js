@@ -182,8 +182,11 @@ function table(rows) {
 }
 
 function renderFixed(bundle, ctx, out) {
+  // Cheapest tier first, so the running union adds each tier's new games. Stores differ:
+  // Humble lists its most expensive tier first, with every game it includes.
+  const tiers = [...bundle.tiers].sort((a, b) => a.price - b.price);
   const seen = new Map();
-  bundle.tiers.forEach((tier, i) => {
+  tiers.forEach((tier, i) => {
     const added = [];
     for (const item of tier.items) for (const g of item.games) {
       if (!seen.has(gameKey(g))) { seen.set(gameKey(g), g); added.push(g); }
@@ -194,7 +197,7 @@ function renderFixed(bundle, ctx, out) {
     const perGame = unowned.length ? cost / unowned.length : null;
     const value = unowned.reduce((s, g) => s + (ctx.price(g).low || 0), 0);
     out.appendChild(el('div', { style: 'margin-top:6px;font-weight:bold;' },
-      (bundle.tiers.length > 1 ? 'Tier ' + (i + 1) + ': ' : '') + inr(cost) + ' for ' + unowned.length + ' unowned of ' + all.length +
+      (tiers.length > 1 ? 'Tier ' + (i + 1) + ': ' : '') + inr(cost) + ' for ' + unowned.length + ' unowned of ' + all.length +
       (perGame ? ' = ' + inr(perGame) + '/game' : '')));
     out.appendChild(el('div', { style: value > cost ? GOOD : WARN },
       'Unowned games\' India lows add up to ' + inr(value) + ' → ' + (value > cost ? 'worth it' : 'cheaper to wait for Steam sales')));
