@@ -73,12 +73,55 @@ async function fillAppIdsFromItadBundle(games, key) {
   return 0;
 }
 
-// games: [{ title, appid|null }] -> Map(gameKey -> { appid, itadId, low, current, bundled, byName })
-// Games still without an appid are matched by title (byName: could be a same-name game).
+// Fallback for games ITAD's bundle data didn't cover: exact-name search on Steam, checked
+// against the developers/publishers the store lists (Steam search rarely returns two
+// same-name games; the real risk is one result that's the wrong same-name game).
+//   one or more exact-name matches, exactly one sharing a developer/publisher
+//                              -> take it (g.match = 'maker', confirmed)
+//   one match, store lists no makers or they don't line up
+//                              -> take it (g.match = 'name', shown with ~)
+//   several, none or several share a maker -> 'ambiguous', not guessed (shown as (?))
+//   none (names differ)        -> left for ITAD's title lookup in priceGames
+async function resolveByName(games) {
+  const steamSearch = (title) =>
+    gmJson('https://store.steampowered.com/api/storesearch/?l=english&cc=IN&term=' + encodeURIComponent(title))
+      .then((d) => (d.items || []).filter((i) => norm(i.name) === norm(title)))
+      .catch(() => []);
+  const makersOfApp = (id) =>
+    gmJson('https://store.steampowered.com/api/appdetails?filters=basic,developers,publishers&appids=' + id)
+      .then((d) => { const x = (d[id] && d[id].data) || {}; return [...(x.developers || []), ...(x.publishers || [])].map(norm); })
+      .catch(() => []);
+
+  for (const g of games.filter((x) => !x.appid)) {
+    const hits = await steamSearch(g.title);
+    if (!hits.length) continue;
+    const makers = new Set((g.makers || []).map(norm));
+    const fits = [];
+    if (makers.size) {
+      for (const h of hits) if ((await makersOfApp(h.id)).some((m) => makers.has(m))) fits.push(Number(h.id));
+    }
+    if (fits.length === 1) {
+      g.appid = fits[0];
+      g.match = 'maker';
+    } else if (hits.length === 1) {
+      g.appid = Number(hits[0].id);
+      g.match = 'name';
+    } else {
+      g.match = 'ambiguous';
+    }
+  }
+}
+
+// games: [{ title, appid|null, match? }] -> Map(gameKey -> { appid, itadId, low, current, bundled, match })
+// match: undefined = exact ID from the store or ITAD's bundle data, 'maker' = confirmed by
+// developer/publisher, 'name' = name only, 'ambiguous' = several same-name games (not guessed).
+// Games still without an appid (and not ambiguous) get ITAD's title lookup as a last resort.
 async function priceGames(games, key) {
   const q = '?key=' + encodeURIComponent(key);
   const info = new Map();
-  for (const g of games) info.set(gameKey(g), { appid: g.appid || null, itadId: null, low: null, current: null, bundled: null, byName: !g.appid });
+  for (const g of games) {
+    info.set(gameKey(g), { appid: g.appid || null, itadId: null, low: null, current: null, bundled: null, match: g.appid ? g.match : g.match || 'name' });
+  }
 
   const withApp = games.filter((g) => g.appid);
   for (const part of chunks(withApp, 200)) {
@@ -86,7 +129,7 @@ async function priceGames(games, key) {
     part.forEach((g) => { info.get(gameKey(g)).itadId = ids['app/' + g.appid] || null; });
   }
 
-  const byTitle = games.filter((g) => !g.appid);
+  const byTitle = games.filter((g) => !g.appid && g.match !== 'ambiguous');
   for (const part of chunks(byTitle, 200)) {
     const ids = await gmJson(ITAD + '/lookup/id/title/v1' + q, part.map((g) => g.title));
     part.forEach((g) => { info.get(gameKey(g)).itadId = ids[g.title] || null; });
@@ -126,7 +169,7 @@ function gameRow(g, p, status, perGame) {
   const cheaper = !owned && perGame && p.low !== null && p.low < perGame;
   return el('tr', { style: owned ? DIM : '' },
     el('td', { style: TD }, owned ? 'owned' : status === 'wish' ? '★' : ''),
-    el('td', { style: TD }, g.title + (!p.appid ? ' (?)' : p.byName ? ' ~' : '')),
+    el('td', { style: TD }, g.title + (!p.appid ? ' (?)' : p.match === 'name' ? ' ~' : '')),
     el('td', { style: TD + 'text-align:right;' + (cheaper ? WARN : '') }, p.low === null ? '-' : inr(p.low)),
     el('td', { style: TD + 'text-align:right;' + DIM }, p.current === null ? '-' : inr(p.current)));
 }
@@ -218,6 +261,10 @@ async function runAdvice(store, ui) {
     } catch (e) {
       ui.log('  ITAD bundle lookup failed (' + e.message + '), falling back to name matching');
     }
+    if (raw.some((g) => !g.appid)) {
+      ui.log('Matching the rest by name on Steam (developer/publisher breaks ties)...');
+      await resolveByName(raw);
+    }
   }
   const games = [...new Map(raw.map((g) => [gameKey(g), g])).values()];
   ui.log(bundle.name + ': ' + games.length + ' games. Looking up Steam India prices...');
@@ -241,7 +288,7 @@ async function runAdvice(store, ui) {
   }, '▾ ' + bundle.name));
   ui.panel.appendChild(body);
   body.appendChild(el('div', { style: DIM }, 'USD→INR ' + rate.toFixed(2) + ' +' + Math.round(ctx.fx.fxMarkup * 100) + '% card/PayPal' +
-    (ctx.fx.taxRate ? ', +' + Math.round(ctx.fx.taxRate * 100) + '% tax' : '') + '. ★ wishlisted, ~ matched by name only (could be a same-name game), (?) not found on Steam.'));
+    (ctx.fx.taxRate ? ', +' + Math.round(ctx.fx.taxRate * 100) + '% tax' : '') + '. ★ wishlisted, ~ matched by name only, (?) not found or several same-name games on Steam.'));
   (bundle.kind === 'pick' ? renderPick : renderFixed)(bundle, ctx, body);
 }
 

@@ -87,6 +87,14 @@
   // tag after hydrating, so re-fetch the HTML). Items carry no Steam appid; titles are
   // matched through IsThereAnyDeal. Tier prices are what Humble charges this visitor,
   // so for India they already include the 18% GST: taxRate stays 0.
+  // Developer + publisher names; Humble sometimes packs several into one string.
+  function makersOf(it) {
+    return [...(it.developers || []).map((x) => x['developer-name']), ...(it.publishers || []).map((x) => x['publisher-name'])]
+      .flatMap((s) => (s || '').split(','))
+      .map((s) => s.trim())
+      .filter(Boolean);
+  }
+
   async function getBundle() {
     const html = await fetch(location.href, { credentials: 'include' }).then((r) => r.text());
     const doc = new DOMParser().parseFromString(html, 'text/html');
@@ -102,7 +110,7 @@
         items: (d.tier_display_data[t].tier_item_machine_names || [])
           .map((n) => items[n])
           .filter(isSteam)
-          .map((it) => ({ title: it.human_name, games: [{ title: it.human_name, appid: null }] })),
+          .map((it) => ({ title: it.human_name, games: [{ title: it.human_name, appid: null, makers: makersOf(it) }] })),
       };
     });
     const name = (d.basic_data && d.basic_data.human_name) || document.title;

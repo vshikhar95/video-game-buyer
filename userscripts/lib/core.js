@@ -10,7 +10,9 @@
 //     bundle: { name, kind: 'fixed'|'pick', currency, taxRate, tiers, pool? }
 //       fixed: tiers [{ price, items }]   (tiers may repeat earlier items; they're unioned)
 //       pick:  tiers [{ qty, price }], pool [item]
-//       item:  { title, games: [{ title, appid|null }] }   (a pick can hold several games)
+//       item:  { title, games: [game] }   (a pick can hold several games)
+//       game:  { title, appid|null, makers?: [developer/publisher names] }
+//              makers let the advisor tell same-name Steam games apart when appid is null.
 const STORES = [];
 function registerStore(store) {
   STORES.push(store);
