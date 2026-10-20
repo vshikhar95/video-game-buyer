@@ -9,7 +9,8 @@
 //   advise: { isActive(), getBundle() -> bundle }
 //     bundle: { name, kind: 'fixed'|'pick', currency, taxRate, tiers, pool? }
 //       fixed: tiers [{ price, items }]   (tiers may repeat earlier items; they're unioned)
-//       pick:  tiers [{ qty, price }], pool [item]
+//       pick:  tiers [{ qty, price }], pool [item], cart? { selected() -> Set(item titles),
+//              set(title, on) -> clicked? }   (optional: lets the advisor put picks in the cart)
 //       item:  { title, games: [game] }   (a pick can hold several games)
 //       game:  { title, appid|null, makers?: [developer/publisher names] }
 //              makers let the advisor tell same-name Steam games apart when appid is null.
@@ -83,11 +84,13 @@ function getConfig(fields) {
 
 // --- Panel UI ------------------------------------------------------------
 // A fixed dark panel; with buttonText, a button above it starts hidden content.
-function makePanel({ buttonText, top = 80, width = 380 } = {}) {
+// bottom: anchor to the bottom of the window instead of the top (no button in that case).
+function makePanel({ buttonText, top = 80, width = 380, bottom } = {}) {
   const panel = document.createElement('div');
   Object.assign(panel.style, {
-    position: 'fixed', top: (buttonText ? top + 44 : top) + 'px', right: '20px', zIndex: 999999,
-    width: width + 'px', maxHeight: '70vh', overflowY: 'auto',
+    position: 'fixed', right: '20px', zIndex: 999999,
+    ...(bottom !== undefined ? { bottom: bottom + 'px' } : { top: (buttonText ? top + 44 : top) + 'px' }),
+    width: width + 'px', maxHeight: bottom !== undefined ? '60vh' : '70vh', overflowY: 'auto',
     background: '#1b1b1b', color: '#eee', fontSize: '12px', lineHeight: '1.5',
     padding: '10px', borderRadius: '6px', display: buttonText ? 'none' : 'block',
     boxShadow: '0 2px 8px rgba(0,0,0,.5)', fontFamily: 'Consolas, monospace',

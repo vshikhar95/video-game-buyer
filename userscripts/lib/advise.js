@@ -239,47 +239,114 @@ function renderFixed(bundle, ctx, out) {
   out.appendChild(el('div', { style: DIM }, 'Orange low = that game has sold for less on Steam India than its per-game cost here.'));
 }
 
+const BTN = 'background:#333;color:#eee;border:1px solid #555;border-radius:3px;padding:2px 7px;margin:0 4px 4px 0;cursor:pointer;font:11px Consolas,monospace;';
+
 function renderPick(bundle, ctx, out) {
   const tiers = bundle.tiers.map((t) => ({ qty: t.qty, price: toInr(t.price, bundle.currency, ctx.fx) }));
-  const candidates = bundle.pool
+  const minQty = Math.min(...tiers.map((t) => t.qty));
+  // Every pick, most valuable first; value = its unowned games' Steam India lows (0 if fully owned).
+  const picks = bundle.pool
     .map((item) => {
       const unowned = item.games.filter((g) => ctx.status(g) !== 'owned');
       return { item, unowned, value: unowned.reduce((s, g) => s + (ctx.price(g).low || 0), 0) };
     })
-    .filter((c) => c.unowned.length);
-  const ownedPicks = bundle.pool.length - candidates.length;
+    .sort((a, b) => b.value - a.value);
+  const candidates = picks.filter((c) => c.unowned.length);
   out.appendChild(el('div', {}, 'Tiers: ' + tiers.map((t) => t.qty + ' for ' + inr(t.price)).join(', ') + '. ' +
-    candidates.length + ' of ' + bundle.pool.length + ' picks have games you don\'t own.'));
+    candidates.length + ' of ' + picks.length + ' picks have games you don\'t own.'));
 
   // Extra picks beyond the wanted ones, added only to reach a cheaper tier.
   const filler = (n, buy) => (buy > n ? ' (+' + (buy - n) + ' filler pick' + (buy - n > 1 ? 's' : '') + ' to reach the ' + buy + '-pick tier)' : '');
-  const all = pickCost(candidates.length, tiers, bundle.pool.length);
+  const all = pickCost(candidates.length, tiers, picks.length);
   const allGames = candidates.reduce((s, c) => s + c.unowned.length, 0);
   out.appendChild(el('div', { style: 'margin-top:6px;font-weight:bold;' }, 'Take all unowned: ' +
     (!all || !allGames ? 'not possible with this pool'
       : candidates.length + ' picks for ' + inr(all.cost) + ' = ' + inr(all.cost / allGames) + '/game (' + allGames + ' games)' + filler(candidates.length, all.buy))));
 
-  const best = bestPicks(candidates, tiers, bundle.pool.length);
-  if (!best) return out.appendChild(el('div', { style: WARN }, 'Skip: not enough picks for the first tier.'));
-  const picked = new Set(best.picks);
-  out.appendChild(el('div', { style: 'margin-top:6px;font-weight:bold;' + (best.value > best.cost ? GOOD : WARN) },
-    'Recommended: ' + best.n + ' picks for ' + inr(best.cost) + ' (' + inr(best.perPick) + '/pick), India lows ' + inr(best.value) +
-    filler(best.n, best.buy) + (best.value > best.cost ? '' : ' → not worth it')));
+  const best = bestPicks(candidates, tiers, picks.length);
+  // Recommended selection includes any filler picks: the next most valuable remaining ones.
+  const recommended = new Set(best ? [...best.picks, ...picks.filter((p) => !best.picks.includes(p)).slice(0, best.buy - best.n)] : []);
+  out.appendChild(best
+    ? el('div', { style: 'margin-top:6px;font-weight:bold;' + (best.value > best.cost ? GOOD : WARN) },
+      'Recommended: ' + best.n + ' picks for ' + inr(best.cost) + ' (' + inr(best.perPick) + '/pick), India lows ' + inr(best.value) +
+      filler(best.n, best.buy) + (best.value > best.cost ? '' : ' → not worth it'))
+    : el('div', { style: WARN }, 'Skip: not enough picks for the first tier.'));
 
-  const rows = [...candidates].sort((a, b) => b.value - a.value).map((c) => {
-    const take = picked.has(c);
-    const label = c.item.title + (c.item.games.length > 1 ? ' [' + c.unowned.map((g) => g.title).join(', ') + ']' : '');
-    const wish = c.unowned.some((g) => ctx.status(g) === 'wish');
-    return el('tr', { style: take ? '' : DIM },
-      el('td', { style: TD + (take ? GOOD : '') }, take ? 'take' : 'skip'),
+  // --- Selection (only when the store can put picks in the cart) ---
+  const cart = bundle.cart;
+  const checked = new Set(cart ? picks.filter((p) => cart.selected().has(p.item.title)) : []);
+  const boxes = new Map();
+  const summary = el('div', { style: 'margin:4px 0;' });
+  const status = el('div', { style: DIM });
+  function refresh() {
+    boxes.forEach((box, p) => { box.checked = checked.has(p); });
+    const n = checked.size;
+    const exact = pickCost(n, tiers, n);
+    const cheaper = pickCost(n, tiers, picks.length);
+    summary.textContent = !n ? 'Nothing selected.'
+      : !exact ? n + ' selected: pick at least ' + minQty + ' for the first tier.'
+      : n + ' selected → ' + inr(exact.cost) + ' (' + inr(exact.cost / n) + '/pick)' +
+        (cheaper && cheaper.buy > n ? '. ' + (cheaper.buy - n) + ' more reach the ' + cheaper.buy + '-pick tier for ' + inr(cheaper.cost) + '.' : '');
+  }
+  const select = (list) => { checked.clear(); list.forEach((p) => checked.add(p)); refresh(); };
+
+  async function updateCart(button) {
+    button.disabled = true;
+    let clicks = 0;
+    const errors = [];
+    for (const p of picks) {
+      try {
+        if (await cart.set(p.item.title, checked.has(p))) {
+          clicks++;
+          status.textContent = 'Updating cart... ' + clicks + ' change(s)';
+          await sleep(700);
+        }
+      } catch (e) {
+        errors.push(e.message);
+      }
+    }
+    // Re-read the page so the checkboxes show what Fanatical actually has.
+    select(picks.filter((p) => cart.selected().has(p.item.title)));
+    status.textContent = clicks + ' change(s) made; ' + checked.size + ' picks in the cart.' + (errors.length ? ' Problems: ' + errors.join('; ') : '');
+    button.disabled = false;
+  }
+
+  if (cart) {
+    out.appendChild(el('div', { style: 'margin-top:8px;' },
+      el('button', { style: BTN, onclick: () => select(picks) }, 'All'),
+      el('button', { style: BTN, onclick: () => select(candidates) }, 'Unowned'),
+      el('button', { style: BTN, onclick: () => select([...recommended]) }, 'Recommended'),
+      el('button', { style: BTN, onclick: () => select([]) }, 'None')));
+    out.appendChild(summary);
+    const go = el('button', { style: BTN + 'background:#cb272c;border-color:#cb272c;color:#fff;' }, 'Update cart');
+    go.addEventListener('click', () => updateCart(go));
+    out.appendChild(el('div', {}, go, status));
+  }
+
+  const rows = picks.map((p) => {
+    const owned = !p.unowned.length;
+    const take = recommended.has(p);
+    const label = p.item.title + (p.item.games.length > 1 && !owned ? ' [' + p.unowned.map((g) => g.title).join(', ') + ']' : '');
+    const wish = p.unowned.some((g) => ctx.status(g) === 'wish');
+    let box = null;
+    if (cart) {
+      box = el('input', { type: 'checkbox', style: 'margin:0;cursor:pointer;' });
+      box.addEventListener('change', () => { if (box.checked) checked.add(p); else checked.delete(p); refresh(); });
+      boxes.set(p, box);
+    }
+    return el('tr', { style: owned ? DIM : take ? '' : DIM },
+      cart ? el('td', { style: TD }, box) : null,
+      el('td', { style: TD + (take ? GOOD : '') }, owned ? 'owned' : take ? 'take' : 'skip'),
       el('td', { style: TD }, (wish ? '★ ' : '') + label),
-      el('td', { style: TD + 'text-align:right;' + (!take ? WARN : '') }, inr(c.value)));
+      el('td', { style: TD + 'text-align:right;' + (!take && !owned ? WARN : '') }, owned ? '-' : inr(p.value)));
   });
   out.appendChild(el('table', { style: 'border-collapse:collapse;width:100%;margin:4px 0 8px;' },
-    el('tr', { style: DIM }, el('td', { style: TD }, ''), el('td', { style: TD }, 'pick'), el('td', { style: TD + 'text-align:right;' }, 'IN lows')),
+    el('tr', { style: DIM }, cart ? el('td', { style: TD }, '') : null, el('td', { style: TD }, ''), el('td', { style: TD }, 'pick'),
+      el('td', { style: TD + 'text-align:right;' }, 'IN lows')),
     ...rows));
-  out.appendChild(el('div', { style: DIM }, 'Skipped picks have sold for less on Steam India than the ' + inr(best.perPick) +
-    ' per pick they would cost here.' + (ownedPicks ? ' ' + ownedPicks + ' picks are fully owned and left out.' : '')));
+  out.appendChild(el('div', { style: DIM }, best ? 'Skipped picks have sold for less on Steam India than the ' + inr(best.perPick) +
+    ' per pick they would cost here.' : ''));
+  refresh();
 }
 
 async function runAdvice(store, ui) {
@@ -310,6 +377,7 @@ async function runAdvice(store, ui) {
   }
   if (unresolved.length) saveMatchCache(unresolved, cache);
   const games = [...new Map(raw.map((g) => [gameKey(g), g])).values()];
+  if (!games.length) return ui.log(bundle.name + ': no listed Steam games to price (a mystery bundle?).');
   ui.log(bundle.name + ': ' + games.length + ' games. Looking up Steam India prices...');
 
   const [prices, steam, rate] = await Promise.all([priceGames(games, cfg.itadKey), steamUserData(), usdInrRate()]);
@@ -323,11 +391,15 @@ async function runAdvice(store, ui) {
   };
 
   // Click the title to collapse the panel out of the way.
-  const body = el('div', {});
+  const body = el('div', { style: GM_getValue('collapsed', false) ? 'display:none' : '' });
   ui.panel.textContent = '';
   ui.panel.appendChild(el('div', {
-    style: 'font-weight:bold;font-size:13px;cursor:pointer;', title: 'Click to collapse/expand',
-    onclick: () => { body.style.display = body.style.display === 'none' ? '' : 'none'; },
+    style: 'font-weight:bold;font-size:13px;cursor:pointer;', title: 'Click to collapse/expand (remembered)',
+    onclick: () => {
+      const hide = body.style.display !== 'none';
+      body.style.display = hide ? 'none' : '';
+      GM_setValue('collapsed', hide);
+    },
   }, '▾ ' + bundle.name));
   ui.panel.appendChild(body);
   body.appendChild(el('div', { style: DIM }, 'USD→INR ' + rate.toFixed(2) + ' +' + Math.round(ctx.fx.fxMarkup * 100) + '% card/PayPal' +
@@ -346,7 +418,7 @@ function runAdvisor() {
     ui = null;
     const store = activeStore('advise');
     if (!store) return;
-    ui = makePanel({ width: 460 });
+    ui = makePanel({ width: 460, bottom: 20 }); // bottom right: keeps the store's cart box visible
     try {
       await runAdvice(store, ui);
     } catch (e) {

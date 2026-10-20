@@ -124,6 +124,26 @@
     return Promise.all(p.bundleGames.map(async (g) => ({ title: g.name.trim(), appid: await exactAppId(g.slug) })));
   }
 
+  // Pick & mix cart: each card's own "Add" / "Remove from bundle" button adds or removes the
+  // pick in the basket directly (POST /api/basket), so the advisor just clicks those.
+  const pickCards = () =>
+    new Map(Array.from(document.querySelectorAll('.PickAndMixCard')).map((c) => [((c.querySelector('.card-product-name') || {}).textContent || '').trim(), c]));
+  const isPicked = (card) => card.classList.contains('card-selected');
+  const pickCart = {
+    selected: () => new Set([...pickCards()].filter(([, c]) => isPicked(c)).map(([name]) => name)),
+    // -> true if it clicked, false if the pick was already in that state
+    async set(title, on) {
+      const card = pickCards().get(title);
+      if (!card) throw new Error('no card for "' + title + '" on the page');
+      if (isPicked(card) === on) return false;
+      const btn = Array.from(card.querySelectorAll('button.select-btn')).find((b) => b.offsetParent !== null);
+      if (!btn) throw new Error('no Add/Remove button for "' + title + '"');
+      btn.click();
+      if (!(await waitFor(() => isPicked(card) === on, 8000))) throw new Error('Fanatical did not confirm "' + title + '"');
+      return true;
+    },
+  };
+
   function bundlePage() {
     const m = location.pathname.match(/^\/[a-z]{2}\/(pick-and-mix|bundle)\/([^/?#]+)/);
     return m ? { kind: m[1], slug: m[2] } : null;
@@ -135,7 +155,7 @@
       const j = await publicJson('/api/pick-and-mix/' + page.slug + '/en');
       const pool = await Promise.all(j.products.filter(isSteam).map(async (p) => ({ title: p.name, games: await packGames(p) })));
       return {
-        name: j.name, kind: 'pick', currency: 'USD', taxRate: 0, pool,
+        name: j.name, kind: 'pick', currency: 'USD', taxRate: 0, pool, cart: pickCart,
         tiers: j.tiers.map((t) => ({ qty: t.quantity, price: t.price.USD / 100 })),
       };
     }
@@ -144,7 +164,9 @@
       name: g.name, kind: 'fixed', currency: 'USD', taxRate: 0,
       tiers: (g.bundles || []).map((b) => ({
         price: b.price.USD / 100,
-        items: (b.games || []).filter(isSteam).map((x) => ({ title: x.name, games: [{ title: x.name, appid: x.steam && x.steam.id ? Number(x.steam.id) : null }] })),
+        // Mystery slots have no known game until bought: nothing to price.
+        items: (b.games || []).filter((x) => isSteam(x) && !x.mystery)
+          .map((x) => ({ title: x.name, games: [{ title: x.name, appid: x.steam && x.steam.id ? Number(x.steam.id) : null }] })),
       })),
     };
   }
