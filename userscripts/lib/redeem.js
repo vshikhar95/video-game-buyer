@@ -130,10 +130,7 @@ async function runScan(store, log) {
 
   // Base games first so DLC finds its base game already activated.
   const added = enqueueKeys([...baseItems, ...dlcItems]);
-  if (added) {
-    log('Queued ' + added + ' key(s) for activation. Opening Steam\'s activation page...');
-    GM_openInTab('https://store.steampowered.com/account/registerkey/', { active: true });
-  }
+  if (added) log('Queued ' + added + ' key(s) for activation. ' + ensureWorker());
 }
 
 function initStorePage() {
@@ -158,6 +155,10 @@ function initStorePage() {
 const QUEUE_KEY = 'activationQueue';
 const PAUSE_KEY = 'rateLimitedUntil';
 const LOCK_KEY = 'activationLock';
+const WORKER_KEY = 'activationWorker'; // heartbeat of the Steam tab working the queue
+const WORKER_FRESH_MS = 90 * 1000; // background tabs may only tick once a minute
+const RELOADS_KEY = 'sessionReloads';
+const REGISTER_URL = 'https://store.steampowered.com/account/registerkey/';
 const RATE_LIMIT_PAUSE_MS = 60 * 60 * 1000; // Steam lifts its activation limit about an hour later
 const KEY_GAP_MS = 1500;
 const MAX_RATE_LIMIT_RETRIES = 4; // a key that keeps getting "rate limited" is reported, not retried forever
@@ -215,7 +216,44 @@ async function activateKey(key) {
     headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
     body: new URLSearchParams({ product_key: key, sessionid: decodeURIComponent(sid) }),
   });
-  return parseActivation(await res.json().catch(() => null));
+  // A stale login session gets an error page or a non-JSON reply, not a result code.
+  const reply = res.ok ? await res.json().catch(() => null) : null;
+  if (!reply) throw Object.assign(new Error('Steam rejected the request (HTTP ' + res.status + '): the session looks stale'), { stale: true });
+  return parseActivation(reply);
+}
+
+// --- Worker tab ---------------------------------------------------------------
+// The Steam activation tab that works the queue announces itself; store pages hand keys to it,
+// or open one in the background when none is running.
+function workerAlive() {
+  const w = GM_getValue(WORKER_KEY, null);
+  return !!w && Date.now() - w.at < WORKER_FRESH_MS;
+}
+
+// -> a short status line for the panel
+function ensureWorker() {
+  const n = getQueue().length;
+  const until = GM_getValue(PAUSE_KEY, 0);
+  if (!n) return '';
+  if (Date.now() < until) return 'Steam rate limit: ' + n + ' key(s) will activate after ' + fmtTime(until) + '.';
+  if (workerAlive()) return 'A Steam tab is activating them.';
+  GM_setValue(WORKER_KEY, { id: 'opening', at: Date.now() }); // other pages: don't open a second one
+  GM_openInTab(REGISTER_URL, { active: false, insert: true });
+  return 'Opened Steam\'s activation page in a background tab to activate them.';
+}
+
+// Refreshing the page renews Steam's login session. Guarded so a real logout can't cause a reload loop.
+function reloadForSession(log) {
+  const r = GM_getValue(RELOADS_KEY, { n: 0, at: 0 }) || { n: 0, at: 0 };
+  const recent = Date.now() - r.at < 10 * 60 * 1000 ? r.n : 0;
+  if (recent >= 2) {
+    log('Still failing after refreshing: log in to Steam in this browser, then reload this tab. Keys stay queued.');
+    return false;
+  }
+  GM_setValue(RELOADS_KEY, { n: recent + 1, at: Date.now() });
+  log('Refreshing this tab to renew the Steam session...');
+  location.reload();
+  return true;
 }
 
 // One tab at a time works the queue (two open Steam tabs would try the same keys).
@@ -247,11 +285,14 @@ async function processQueue(log) {
       try {
         result = await activateKey(item.key);
       } catch (e) {
-        return log('Stopped: ' + e.message + ' (' + q.length + ' key(s) still queued).');
+        log('Stopped: ' + e.message + ' (' + q.length + ' key(s) still queued).');
+        if (e.stale) reloadForSession(log);
+        return;
       }
       const rest = getQueue().filter((k) => k.key !== item.key);
       const msg = ACTIVATION_MESSAGES[result.code] || 'Steam error code ' + result.code;
 
+      GM_setValue(RELOADS_KEY, { n: 0, at: 0 }); // the session works
       if (result.code === 1) {
         log('OK    ' + item.title + (result.names.length ? ' (' + result.names.join(', ') + ')' : ''));
       } else if (result.code === 53 && (item.rateLimited || 0) + 1 < MAX_RATE_LIMIT_RETRIES) {
@@ -280,29 +321,40 @@ async function processQueue(log) {
 }
 
 function initRegisterKeyPage() {
-  if (!getQueue().length) return;
-  if (!getConfig(SHEET_CONFIG)) return;
-  const { log } = makePanel({ width: 440 });
-  log('Activation queue: ' + getQueue().length + ' key(s).');
-  processQueue(log);
-  // Checked on a short interval (not one long timer) so it resumes promptly after the laptop sleeps.
-  setInterval(() => processQueue(() => {}), 30000);
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) processQueue(log); });
+  let ui = null;
+  const log = (m) => { if (!ui) ui = makePanel({ width: 440 }); ui.log(m); };
+  const beat = () => GM_setValue(WORKER_KEY, { id: tabId, at: Date.now() });
+  beat();
+  window.addEventListener('pagehide', () => {
+    const w = GM_getValue(WORKER_KEY, null);
+    if (w && w.id === tabId) GM_setValue(WORKER_KEY, null);
+  });
+
+  let pausedHere = false;
+  const tick = () => {
+    beat();
+    const until = GM_getValue(PAUSE_KEY, 0);
+    if (Date.now() < until) { pausedHere = true; return; }
+    // Coming out of a rate-limit pause on an hour-old page: refresh first for a fresh session.
+    if (pausedHere && getQueue().length) return void location.reload();
+    if (getQueue().length && getConfig(SHEET_CONFIG)) processQueue(log);
+  };
+  if (getQueue().length) log('Activation queue: ' + getQueue().length + ' key(s).');
+  tick();
+  // A short interval (not one long timer) so it resumes promptly after the laptop sleeps.
+  setInterval(tick, 20000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) tick(); });
+  // Keys queued from a store page start right away.
+  GM_addValueChangeListener(QUEUE_KEY, (name, oldVal, newVal, remote) => { if (remote) tick(); });
 }
 
-// On store pages: show that keys are waiting, with a way to resume.
+// On store pages: if keys are waiting, make sure a Steam tab is activating them and say so briefly.
 function showQueueNotice() {
-  const q = getQueue();
-  if (!q.length) return;
-  const until = GM_getValue(PAUSE_KEY, 0);
-  const { panel } = makePanel({ top: 140, width: 300 });
-  panel.textContent = '';
-  panel.appendChild(el('div', {}, q.length + ' key(s) waiting to activate on Steam' +
-    (Date.now() < until ? ' (rate limited; resumes at ' + fmtTime(until) + ')' : '') + '. '));
-  panel.appendChild(el('button', {
-    style: 'margin-top:6px;background:#cb272c;color:#fff;border:none;border-radius:4px;padding:4px 10px;cursor:pointer;',
-    onclick: () => GM_openInTab('https://store.steampowered.com/account/registerkey/', { active: true }),
-  }, 'Open Steam'));
+  const status = ensureWorker();
+  if (!status) return;
+  const ui = makePanel({ top: 140, width: 300 });
+  ui.log(getQueue().length + ' key(s) waiting to activate on Steam. ' + status);
+  setTimeout(() => ui.remove(), 15000);
 }
 
 function runRedeemer() {

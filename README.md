@@ -31,7 +31,7 @@ Click **Scan & Redeem Keys** on a supported page. For each Steam key you haven't
 
 1. checks whether you already own the game on Steam;
 2. owned: reveals the key and logs it (with region and expiry, where the store provides them) to a Google Sheet for trading;
-3. not owned: reveals the key and adds it to an **activation queue**, base games first, then DLC, and opens Steam's activation page.
+3. not owned: reveals the key and adds it to an **activation queue**, base games first, then DLC. A Steam activation tab that's already open picks the keys up immediately; otherwise one opens in a background tab.
 
 Steam's activation page works through the queue on its own, sending each key the same way Steam's own page does (no extra extension needed):
 
@@ -39,7 +39,10 @@ Steam's activation page works through the queue on its own, sending each key the
 - already owned or not available in your region: the key is still unused, so it goes to the sheet's main tab as a tradeable spare;
 - needs the base game: retried once after the rest of the queue;
 - invalid or already used: logged to the "Not Activated" tab;
-- rate limited by Steam (roughly 50 activations an hour): the queue pauses for an hour and resumes automatically while the tab is open, also after the laptop sleeps. Otherwise any Humble/Fanatical/IndieGala page shows how many keys are waiting, with an **Open Steam** button. Keeping a Steam activation tab pinned makes it fully hands-off while the browser runs.
+- rate limited by Steam (roughly 50 activations an hour): the queue pauses for an hour, then the tab refreshes itself and carries on, also after the laptop sleeps. If no Steam tab is open by then, the next Humble/Fanatical/IndieGala page you open starts one in the background;
+- stale Steam session: the tab refreshes itself (which renews the session) and continues; after two refreshes in ten minutes it stops and asks you to log in.
+
+Keeping a Steam activation tab pinned makes it fully hands-off while the browser runs.
 
 Already-revealed keys and non-Steam keys are skipped. On first run it asks for the Google Apps Script web app URL and its ingest token. These are kept in Tampermonkey's storage, not in this repo.
 

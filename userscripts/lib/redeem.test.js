@@ -6,13 +6,16 @@ const vm = require('vm');
 
 const store = {};
 const sheetRows = [];
-const replies = {}; // key -> list of Steam replies, consumed in order
+const replies = {}; // key -> list of Steam replies, consumed in order ('STALE' = logged-out error page)
+const opened = [];
+let reloads = 0;
 const ctx = {
   console, URLSearchParams, Date,
   document: { cookie: 'sessionid=abc123; other=1' },
+  location: { reload: () => { reloads++; } },
   GM_getValue: (k, d) => (k in store ? JSON.parse(JSON.stringify(store[k])) : d),
   GM_setValue: (k, v) => { store[k] = v; },
-  GM_openInTab: () => {},
+  GM_openInTab: (url, opts) => { opened.push(opts); },
   // Sheet writes go through GM_xmlhttpRequest; record the rows and say ok.
   GM_xmlhttpRequest: (o) => {
     const body = JSON.parse(o.data);
@@ -24,14 +27,15 @@ const ctx = {
     const p = new URLSearchParams(opts.body);
     assert.strictEqual(p.get('sessionid'), 'abc123');
     const reply = replies[p.get('product_key')].shift();
-    return { json: async () => reply };
+    if (reply === 'STALE') return { ok: false, status: 403, json: async () => { throw new Error('html'); } };
+    return { ok: true, status: 200, json: async () => reply };
   },
 };
 vm.createContext(ctx);
 const code = ['core.js', 'redeem.js'].map((f) => fs.readFileSync(path.join(__dirname, f), 'utf8')).join('\n');
 // No real waiting in tests (later declarations win).
-vm.runInContext(code + '\nasync function sleep() {}\n;this.x = { processQueue, enqueueKeys, parseActivation, getQueue };', ctx);
-const { processQueue, enqueueKeys, parseActivation, getQueue } = ctx.x;
+vm.runInContext(code + '\nasync function sleep() {}\n;this.x = { processQueue, enqueueKeys, parseActivation, getQueue, ensureWorker };', ctx);
+const { processQueue, enqueueKeys, parseActivation, getQueue, ensureWorker } = ctx.x;
 
 const ok = (name) => ({ success: 1, purchase_receipt_info: { line_items: [{ line_item_description: name }] } });
 const fail = (detail) => ({ success: 2, purchase_result_details: detail });
@@ -82,6 +86,33 @@ const log = (m) => logs.push(m);
   for (let i = 0; i < 4; i++) { store.rateLimitedUntil = 0; await processQueue(log); }
   assert.deepStrictEqual(getQueue(), []);
   assert.deepStrictEqual(sheetRows.slice(-1).map((r) => [r.key, r.sheet]), [['H', 'Not Activated']]);
+
+  // Stale session: refresh the tab (up to twice in 10 minutes), keep the key queued.
+  replies.S = ['STALE', 'STALE', 'STALE', ok('Game S')];
+  enqueueKeys([{ title: 'TS', key: 'S' }]);
+  await processQueue(log);
+  await processQueue(log);
+  assert.strictEqual(reloads, 2);
+  await processQueue(log); // third failure: stop and ask to log in, no reload loop
+  assert.strictEqual(reloads, 2);
+  assert.match(logs[logs.length - 1], /log in to Steam/);
+  assert.deepStrictEqual(getQueue().map((k) => k.key), ['S']);
+  await processQueue(log); // session works again
+  assert.deepStrictEqual(getQueue(), []);
+  assert.strictEqual(store.sessionReloads.n, 0); // a working session resets the guard
+
+  // Store pages: open the Steam tab in the background once; not while one is running or paused.
+  store.activationWorker = null;
+  assert.match(ensureWorker(), /^$/); // empty queue: nothing to do
+  enqueueKeys([{ title: 'TW', key: 'W' }]);
+  assert.match(ensureWorker(), /background tab/);
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(opened)), [{ active: false, insert: true }]);
+  assert.match(ensureWorker(), /Steam tab is activating/);
+  assert.strictEqual(opened.length, 1);
+  store.activationWorker = null;
+  store.rateLimitedUntil = Date.now() + 60000;
+  assert.match(ensureWorker(), /rate limit/);
+  assert.strictEqual(opened.length, 1);
 
   console.log('activation queue ok');
 })().catch((e) => { console.error(e); process.exit(1); });
