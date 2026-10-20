@@ -6,7 +6,7 @@
 // Each stores/*.js file calls registerStore({ id, name, redeem?, advise? }).
 //   redeem: { isActive(), listKeys(log) -> [key], reveal(key, log) -> string|null, revealDelayMs }
 //     key: { appid|null, title, key|null (null = unrevealed), ref, onlyInCountries?, exceptCountries?, expiring? }
-//   advise: { isActive(), getBundle() -> bundle }
+//   advise: { isActive(), getBundle() -> bundle, or null if this page isn't a bundle after all }
 //     bundle: { name, kind: 'fixed'|'pick', currency, taxRate, tiers, pool? }
 //       fixed: tiers [{ price, items }]   (tiers may repeat earlier items; they're unioned)
 //       pick:  tiers [{ qty, price }], pool [item], cart? { selected() -> Set(item titles),

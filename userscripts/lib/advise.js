@@ -355,6 +355,7 @@ async function runAdvice(store, ui) {
   if (!cfg) return ui.log('Missing IsThereAnyDeal API key.');
   ui.log('Reading bundle...');
   const bundle = await store.advise.getBundle();
+  if (!bundle) return false; // not a bundle page after all (e.g. a listing): no panel
   const items = bundle.kind === 'pick' ? bundle.pool : bundle.tiers.flatMap((t) => t.items);
   const raw = items.flatMap((i) => i.games);
   // Fill appids first: gameKey depends on appid, so this must happen before deduping.
@@ -421,7 +422,10 @@ function runAdvisor() {
     if (!store) return;
     ui = makePanel({ width: 460, bottom: 20 }); // bottom right: keeps the store's cart box visible
     try {
-      await runAdvice(store, ui);
+      if ((await runAdvice(store, ui)) === false) {
+        ui.remove();
+        ui = null;
+      }
     } catch (e) {
       ui.log('ERROR: ' + e.message);
     }

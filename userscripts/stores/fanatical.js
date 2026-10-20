@@ -159,7 +159,11 @@
         tiers: j.tiers.map((t) => ({ qty: t.quantity, price: t.price.USD / 100 })),
       };
     }
-    const g = await publicJson('/api/products-group/' + page.slug + '/en');
+    // Listing pages like /en/bundle/games share the URL shape but aren't bundles: Fanatical 404s.
+    const res = await fetch('/api/products-group/' + page.slug + '/en');
+    if (res.status === 404) return null;
+    if (!res.ok) throw new Error('Fanatical /api/products-group/' + page.slug + ' -> HTTP ' + res.status);
+    const g = await res.json();
     return {
       name: g.name, kind: 'fixed', currency: 'USD', taxRate: 0,
       tiers: (g.bundles || []).map((b) => ({
