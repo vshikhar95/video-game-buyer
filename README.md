@@ -31,11 +31,17 @@ Click **Scan & Redeem Keys** on a supported page. For each Steam key you haven't
 
 1. checks whether you already own the game on Steam;
 2. owned: reveals the key and logs it (with region and expiry, where the store provides them) to a Google Sheet for trading;
-3. not owned: reveals the key and activates it on Steam, base games first, then DLC. Keys that fail to activate are logged to a "Not Activated" tab.
+3. not owned: reveals the key and adds it to an **activation queue**, base games first, then DLC, and opens Steam's activation page.
 
-Already-revealed keys and non-Steam keys are skipped.
+Steam's activation page works through the queue on its own, sending each key the same way Steam's own page does (no extra extension needed):
 
-Needs the [Augmented Steam](https://augmentedsteam.com/) extension (its "Activate Multiple Products" link on Steam's activation page). On first run it asks for the Google Apps Script web app URL and its ingest token. These are kept in Tampermonkey's storage, not in this repo.
+- activated: done;
+- already owned or not available in your region: the key is still unused, so it goes to the sheet's main tab as a tradeable spare;
+- needs the base game: retried once after the rest of the queue;
+- invalid or already used: logged to the "Not Activated" tab;
+- rate limited by Steam (roughly 50 activations an hour): the queue pauses for an hour and resumes automatically while the tab is open, also after the laptop sleeps. Otherwise any Humble/Fanatical/IndieGala page shows how many keys are waiting, with an **Open Steam** button. Keeping a Steam activation tab pinned makes it fully hands-off while the browser runs.
+
+Already-revealed keys and non-Steam keys are skipped. On first run it asks for the Google Apps Script web app URL and its ingest token. These are kept in Tampermonkey's storage, not in this repo.
 
 ## Code layout
 
@@ -44,6 +50,7 @@ userscripts/
   lib/core.js       shared helpers, store registry, panel UI, Steam ownership, Google Sheet
   lib/math.js       pricing math (node userscripts/lib/math.test.js)
   lib/advise.test.js  match cache check (node userscripts/lib/advise.test.js)
+  lib/redeem.test.js  activation queue check (node userscripts/lib/redeem.test.js)
   lib/redeem.js     store-agnostic redeem flow
   lib/advise.js     store-agnostic advisor flow
   stores/*.js       one file per store
