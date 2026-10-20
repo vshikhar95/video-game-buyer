@@ -327,7 +327,9 @@ function renderPick(bundle, ctx, out) {
   const rows = picks.map((p) => {
     const owned = !p.unowned.length;
     const take = recommended.has(p);
-    const label = p.item.title + (p.item.games.length > 1 && !owned ? ' [' + p.unowned.map((g) => g.title).join(', ') + ']' : '');
+    // Packs list their unowned games with each one's India low; the column is their sum.
+    const lowOf = (g) => (ctx.price(g).low === null ? '-' : inr(ctx.price(g).low));
+    const label = p.item.title + (p.item.games.length > 1 && !owned ? ' [' + p.unowned.map((g) => g.title + ' ' + lowOf(g)).join(', ') + ']' : '');
     const wish = p.unowned.some((g) => ctx.status(g) === 'wish');
     let box = null;
     if (cart) {
@@ -343,7 +345,7 @@ function renderPick(bundle, ctx, out) {
   });
   out.appendChild(el('table', { style: 'border-collapse:collapse;width:100%;margin:4px 0 8px;' },
     el('tr', { style: DIM }, cart ? el('td', { style: TD }, '') : null, el('td', { style: TD }, ''), el('td', { style: TD }, 'pick'),
-      el('td', { style: TD + 'text-align:right;' }, 'IN lows')),
+      el('td', { style: TD + 'text-align:right;' }, 'IN lows (sum)')),
     ...rows));
   out.appendChild(el('div', { style: DIM }, best ? 'Skipped picks have sold for less on Steam India than the ' + inr(best.perPick) +
     ' per pick they would cost here.' : ''));
