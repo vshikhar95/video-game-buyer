@@ -5,6 +5,44 @@
 
 const APPDETAILS_DELAY_MS = 500; // delay between Steam store appdetails calls (rate-limit friendly)
 const NOT_ACTIVATED_SHEET = 'Not Activated';
+const ACTIVATED_SHEET = 'Activated';
+
+// --- Local log -----------------------------------------------------------------
+// Everything the redeemer reports is also kept in Tampermonkey storage (last 1000 lines,
+// 30 days) so a run can be reviewed after the tab is closed. Contains revealed keys, like
+// the queue does; it never leaves your browser.
+const LOG_KEY = 'redeemLog';
+const LOG_MAX = 1000;
+const LOG_TTL_MS = 30 * 864e5;
+
+function recordLog(msg, now = Date.now()) {
+  const list = (GM_getValue(LOG_KEY, []) || []).filter((e) => now - e.t < LOG_TTL_MS);
+  list.push({ t: now, m: String(msg) });
+  GM_setValue(LOG_KEY, list.slice(-LOG_MAX));
+}
+
+// Wraps a panel log so each line is also recorded.
+const withRecord = (log) => (msg) => { log(msg); recordLog(msg); };
+
+function logText() {
+  return (GM_getValue(LOG_KEY, []) || []).map((e) => new Date(e.t).toLocaleString() + '  ' + e.m).join('\n');
+}
+
+function showLogViewer() {
+  const ui = makePanel({ width: 620 });
+  ui.panel.textContent = '';
+  const text = el('textarea', { readonly: 'readonly', style: 'width:100%;height:50vh;background:#111;color:#ddd;border:1px solid #444;font:11px Consolas,monospace;' });
+  text.value = logText() || '(empty)';
+  const btn = 'margin:6px 6px 0 0;background:#333;color:#eee;border:1px solid #555;border-radius:3px;padding:3px 9px;cursor:pointer;';
+  ui.panel.appendChild(el('div', { style: 'font-weight:bold;margin-bottom:4px;' }, 'Redeemer log (last 30 days)'));
+  ui.panel.appendChild(text);
+  ui.panel.appendChild(el('div', {},
+    el('button', { style: btn, onclick: () => { text.select(); navigator.clipboard.writeText(text.value); } }, 'Copy'),
+    el('button', { style: btn, onclick: () => ui.remove() }, 'Close')));
+  text.scrollTop = text.scrollHeight;
+}
+
+const logButton = (style) => el('button', { style: 'background:#333;color:#eee;border:1px solid #555;border-radius:4px;cursor:pointer;' + style, onclick: showLogViewer }, 'Log');
 
 const SHEET_CONFIG = {
   sheetEndpoint: 'Google Apps Script web app URL (ends in /exec):',
@@ -37,20 +75,8 @@ async function writeRowsOrPrint(rows, sheetName, log) {
 }
 
 async function classifyAppId(appid) {
-  if (!appid) return { type: 'unknown', parentAppId: null };
-  try {
-    const obj = await gmJson('https://store.steampowered.com/api/appdetails?appids=' + appid);
-    const entry = obj[String(appid)];
-    if (entry && entry.success && entry.data) {
-      return {
-        type: entry.data.type || 'unknown',
-        parentAppId: entry.data.fullgame ? Number(entry.data.fullgame.appid) : null,
-      };
-    }
-  } catch (e) {
-    // fall through to default below
-  }
-  return { type: 'unknown', parentAppId: null };
+  const d = await steamAppDetails(appid);
+  return d ? { type: d.type || 'unknown', parentAppId: d.fullgame ? Number(d.fullgame.appid) : null } : { type: 'unknown', parentAppId: null };
 }
 
 // Reveals item.key in place via the store. Returns true if the item now has a key.
@@ -64,6 +90,26 @@ async function revealItem(r, item, log) {
   await sleep(r.revealDelayMs);
   log(item.key ? '  revealed: ' + item.title : '  FAILED to reveal key for ' + item.title + ' - skipping');
   return !!item.key;
+}
+
+// Owned-by-appid keys that look like editions ("Complete Edition", "GOTY", "+ Season Pass")
+// can include DLC you don't have. If you own all of the base game's DLC the key is a spare;
+// otherwise Steam decides: activating grants what's missing, or Steam answers "already owned"
+// and the queue files the key as a spare. -> the keys to activate instead of logging.
+async function editionsToActivate(ownedItems, owned, log) {
+  const out = [];
+  for (const k of ownedItems.filter((x) => editionLike(x.title))) {
+    const m = await missingDlc(k.appid, owned);
+    await sleep(APPDETAILS_DELAY_MS);
+    if (!m) continue; // no Steam details: keep it as a spare
+    if (m.missing.length) {
+      log(k.title + ': you own ' + m.name + ' but not ' + m.missing.length + ' of its ' + m.total + ' DLC, so Steam decides on activation.');
+      out.push(k);
+    } else if (m.total) {
+      log(k.title + ': you own ' + m.name + ' and all ' + m.total + ' of its DLC, so it\'s a spare.');
+    }
+  }
+  return out;
 }
 
 async function runScan(store, log) {
@@ -84,11 +130,14 @@ async function runScan(store, log) {
   }
   const { owned } = await steamUserData();
 
-  // Keys with no appid (some packages) land in "not owned"; Steam rejects them if owned
-  // and they end up in the Not Activated tab.
-  const ownedItems = all.filter((k) => k.appid && owned.has(k.appid));
+  // Keys with no appid (some packages) are treated as not owned; if you do own them, Steam
+  // says so on activation and the queue files them as spares.
+  let ownedItems = all.filter((k) => k.appid && owned.has(k.appid));
   const notOwnedItems = all.filter((k) => !k.appid || !owned.has(k.appid));
-  log('Already owned: ' + ownedItems.length + '. Not owned: ' + notOwnedItems.length + '.');
+  const editions = await editionsToActivate(ownedItems, owned, log);
+  ownedItems = ownedItems.filter((k) => !editions.includes(k));
+  notOwnedItems.push(...editions);
+  log('Already owned: ' + ownedItems.length + '. To activate: ' + notOwnedItems.length + '.');
 
   if (ownedItems.length) {
     // Owned keys get revealed too: traders want plain Steam keys, not gift links.
@@ -129,16 +178,23 @@ async function runScan(store, log) {
   log('Base games: ' + baseItems.length + ', DLC: ' + dlcItems.length);
 
   // Base games first so DLC finds its base game already activated.
-  const added = enqueueKeys([...baseItems, ...dlcItems]);
+  const added = enqueueKeys([...baseItems, ...dlcItems], store.name);
   if (added) log('Queued ' + added + ' key(s) for activation. ' + (await ensureWorker()));
 }
 
 function initStorePage() {
   const store = activeStore('redeem');
   if (!store) return;
-  const { btn, log } = makePanel({ buttonText: 'Scan & Redeem Keys' });
+  const ui = makePanel({ buttonText: 'Scan & Redeem Keys' });
+  const { btn } = ui;
+  const log = withRecord(ui.log);
+  // A small Log button just left of the Scan button.
+  const lb = logButton('position:fixed;top:80px;z-index:999999;padding:10px 12px;font-size:14px;');
+  document.body.appendChild(lb);
+  lb.style.right = 20 + btn.offsetWidth + 8 + 'px';
   btn.addEventListener('click', async () => {
     btn.disabled = true;
+    log('--- Scan on ' + store.name + ' (' + location.pathname + ')');
     try {
       await runScan(store, log);
     } catch (e) {
@@ -180,11 +236,11 @@ const ACTIVATION_MESSAGES = {
 const getQueue = () => GM_getValue(QUEUE_KEY, []) || [];
 const fmtTime = (ts) => new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
-function enqueueKeys(items) {
+function enqueueKeys(items, store = '') {
   const q = getQueue();
   const known = new Set(q.map((k) => k.key));
   const fresh = items.filter((k) => k.key && !known.has(k.key))
-    .map((k) => ({ title: k.title, key: k.key, appid: k.appid || null, type: k.type || 'unknown', ...sheetFields(k) }));
+    .map((k) => ({ title: k.title, key: k.key, appid: k.appid || null, type: k.type || 'unknown', store, ...sheetFields(k) }));
   GM_setValue(QUEUE_KEY, q.concat(fresh));
   return fresh.length;
 }
@@ -309,6 +365,9 @@ async function processQueue(log) {
       GM_setValue(RELOADS_KEY, { n: 0, at: 0 }); // the session works
       if (result.code === 1) {
         log('OK    ' + item.title + (result.names.length ? ' (' + result.names.join(', ') + ')' : ''));
+        // Every revealed key ends up somewhere in the sheet: activated ones get their own tab.
+        await writeRowsOrPrint([{ title: item.title, key: item.key,
+          status: 'Activated ' + sheetDate(new Date()) + (item.store ? ' (' + item.store + ')' : ''), ...sheetFields(item) }], ACTIVATED_SHEET, log);
       } else if (result.code === 53 && (item.rateLimited || 0) + 1 < MAX_RATE_LIMIT_RETRIES) {
         GM_setValue(QUEUE_KEY, [{ ...item, rateLimited: (item.rateLimited || 0) + 1 }, ...rest]);
         GM_setValue(PAUSE_KEY, Date.now() + RATE_LIMIT_PAUSE_MS);
@@ -336,7 +395,13 @@ async function processQueue(log) {
 
 function initRegisterKeyPage() {
   let ui = null;
-  const log = (m) => { if (!ui) ui = makePanel({ width: 440 }); ui.log(m); };
+  const log = withRecord((m) => {
+    if (!ui) {
+      ui = makePanel({ width: 440 });
+      ui.panel.appendChild(el('div', { style: 'text-align:right;' }, logButton('padding:2px 8px;font-size:11px;')));
+    }
+    ui.log(m);
+  });
   // Answer store pages' pings, and take any keys they just queued.
   GM_addValueChangeListener(PING_KEY, (name, oldVal, nonce, remote) => {
     if (!remote) return;

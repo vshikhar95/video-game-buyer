@@ -175,3 +175,32 @@ async function postRowsToSheet(rows, sheetName) {
   });
   return JSON.parse(res.responseText);
 }
+
+// --- Editions and DLC -------------------------------------------------------------
+// Keys and picks are matched to the base game's appid, but a "Complete Edition" style key
+// activates a package that can include DLC. These help tell whether you'd gain anything.
+const EDITION_RE = /\b(complete|definitive|goty|game of the year|deluxe|gold|ultimate|collection|bundle|season pass|anthology|trilogy|premium|legendary)\b|\+\s*(dlc|season)/i;
+function editionLike(title) {
+  return EDITION_RE.test(title || '');
+}
+
+// Steam store details for an app (name, type, fullgame, dlc list...); null if unavailable.
+async function steamAppDetails(appid) {
+  if (!appid) return null;
+  try {
+    const obj = await gmJson('https://store.steampowered.com/api/appdetails?appids=' + appid);
+    const entry = obj[String(appid)];
+    return entry && entry.success && entry.data ? entry.data : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+// The base game's DLC that isn't in `owned` -> { name, missing: [appid], total }, or null
+// when Steam's details are unavailable.
+async function missingDlc(appid, owned) {
+  const d = await steamAppDetails(appid);
+  if (!d) return null;
+  const dlc = d.dlc || [];
+  return { name: d.name, missing: dlc.filter((a) => !owned.has(a)), total: dlc.length };
+}

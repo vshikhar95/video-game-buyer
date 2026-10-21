@@ -197,12 +197,12 @@ const DIM = 'color:#777;';
 const WARN = 'color:#f0ad4e;';
 const GOOD = 'color:#8fd18f;';
 
-function gameRow(g, p, status, perGame) {
+function gameRow(g, p, status, perGame, note) {
   const owned = status === 'owned';
   const cheaper = !owned && perGame && p.low !== null && p.low < perGame;
   return el('tr', { style: owned ? DIM : '' },
     el('td', { style: TD }, owned ? 'owned' : status === 'wish' ? '★' : ''),
-    el('td', { style: TD }, g.title + (!p.appid ? ' (?)' : p.match === 'name' ? ' ~' : '')),
+    el('td', { style: TD }, g.title + (!p.appid ? ' (?)' : p.match === 'name' ? ' ~' : '') + (note ? ' (' + note + ')' : '')),
     el('td', { style: TD + 'text-align:right;' + (cheaper ? WARN : '') }, p.low === null ? '-' : inr(p.low)),
     el('td', { style: TD + 'text-align:right;' + DIM }, p.current === null ? '-' : inr(p.current)));
 }
@@ -234,7 +234,7 @@ function renderFixed(bundle, ctx, out) {
       (perGame ? ' = ' + inr(perGame) + '/game' : '')));
     out.appendChild(el('div', { style: value > cost ? GOOD : WARN },
       'Unowned games\' India lows add up to ' + inr(value) + ' → ' + (value > cost ? 'worth it' : 'cheaper to wait for Steam sales')));
-    out.appendChild(table(added.map((g) => gameRow(g, ctx.price(g), ctx.status(g), perGame))));
+    out.appendChild(table(added.map((g) => gameRow(g, ctx.price(g), ctx.status(g), perGame, ctx.dlcNote(g)))));
   });
   out.appendChild(el('div', { style: DIM }, 'Orange low = that game has sold for less on Steam India than its per-game cost here.'));
 }
@@ -329,7 +329,10 @@ function renderPick(bundle, ctx, out) {
     const take = recommended.has(p);
     // Packs list their unowned games with each one's India low; the column is their sum.
     const lowOf = (g) => (ctx.price(g).low === null ? '-' : inr(ctx.price(g).low));
-    const label = p.item.title + (p.item.games.length > 1 && !owned ? ' [' + p.unowned.map((g) => g.title + ' ' + lowOf(g)).join(', ') + ']' : '');
+    const notes = p.item.games.filter((g) => ctx.status(g) === 'owned' && ctx.dlcNote(g))
+      .map((g) => (p.item.games.length > 1 ? g.title + ': ' : '') + ctx.dlcNote(g));
+    const label = p.item.title + (p.item.games.length > 1 && !owned ? ' [' + p.unowned.map((g) => g.title + ' ' + lowOf(g)).join(', ') + ']' : '') +
+      (notes.length ? ' (' + notes.join('; ') + ')' : '');
     const wish = p.unowned.some((g) => ctx.status(g) === 'wish');
     let box = null;
     if (cart) {
@@ -385,7 +388,19 @@ async function runAdvice(store, ui) {
   ui.log(bundle.name + ': ' + games.length + ' games. Looking up Steam India prices...');
 
   const [prices, steam, rate] = await Promise.all([priceGames(games, cfg.itadKey), steamUserData(), usdInrRate()]);
+  // Owned games sold as an edition ("Complete Edition"...) may include DLC you don't have.
+  const dlcNotes = new Map();
+  for (const g of games) {
+    const app = prices.get(gameKey(g)).appid;
+    if (!app || !steam.owned.has(app) || !editionLike(g.title)) continue;
+    const m = await missingDlc(app, steam.owned);
+    if (m && m.missing.length) dlcNotes.set(gameKey(g), m);
+  }
   const ctx = {
+    dlcNote: (g) => {
+      const m = dlcNotes.get(gameKey(g));
+      return m ? 'base owned; ' + m.missing.length + ' of ' + m.total + ' DLC not owned' : '';
+    },
     fx: { taxRate: bundle.taxRate || 0, usdInr: rate, fxMarkup: Number(GM_getValue('fxMarkup', DEFAULT_FX_MARKUP)) },
     price: (g) => prices.get(gameKey(g)),
     status: (g) => {

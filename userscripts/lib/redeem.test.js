@@ -38,8 +38,11 @@ const ctx = {
 vm.createContext(ctx);
 const code = ['core.js', 'redeem.js'].map((f) => fs.readFileSync(path.join(__dirname, f), 'utf8')).join('\n');
 // No real waiting in tests (later declarations win).
-vm.runInContext(code + '\nasync function sleep() {}\n;this.x = { processQueue, enqueueKeys, parseActivation, getQueue, ensureWorker };', ctx);
-const { processQueue, enqueueKeys, parseActivation, getQueue, ensureWorker } = ctx.x;
+// No real waiting in tests, and Steam's DLC lookup is stubbed (later declarations win).
+const dlcOf = { 620590: { name: 'Ancestors Legacy', dlc: [1049810, 799330, 799331, 1100220] }, 100: { name: 'Owned All', dlc: [101] }, 200: { name: 'No DLC', dlc: [] } };
+vm.runInContext(code + '\nasync function sleep() {}\nasync function missingDlc(appid, owned) { const d = globalThis.dlcOf[appid]; return d ? { name: d.name, missing: d.dlc.filter((a) => !owned.has(a)), total: d.dlc.length } : null; }\n' +
+  ';this.x = { processQueue, enqueueKeys, parseActivation, getQueue, ensureWorker, editionsToActivate, recordLog, editionLike };', Object.assign(ctx, { dlcOf }));
+const { processQueue, enqueueKeys, parseActivation, getQueue, ensureWorker, editionsToActivate, recordLog, editionLike } = ctx.x;
 
 const ok = (name) => ({ success: 1, purchase_receipt_info: { line_items: [{ line_item_description: name }] } });
 const fail = (detail) => ({ success: 2, purchase_result_details: detail });
@@ -56,20 +59,24 @@ Object.assign(replies, {
   F: [fail(53), ok('Game F')], // rate limited, then fine after the pause
   G: [ok('Game G')],
 });
-assert.strictEqual(enqueueKeys('ABCDEFG'.split('').map((k) => ({ title: 'T' + k, key: k }))), 7);
+assert.strictEqual(enqueueKeys('ABCDEFG'.split('').map((k) => ({ title: 'T' + k, key: k })), 'Fanatical'), 7);
 assert.strictEqual(enqueueKeys([{ title: 'TA', key: 'A' }]), 0); // no duplicates
 
 const logs = [];
 const log = (m) => logs.push(m);
+const notActivatedRows = () => sheetRows.filter((r) => r.sheet !== 'Activated');
 (async () => {
   // Run 1: stops at F's rate limit.
   await processQueue(log);
   assert.deepStrictEqual(getQueue().map((k) => k.key), ['F', 'G', 'D']);
   assert.strictEqual(getQueue()[0].rateLimited, 1);
   assert.ok(store.rateLimitedUntil > Date.now() + 59 * 60 * 1000);
-  assert.deepStrictEqual(sheetRows.map((r) => [r.key, r.sheet]), [['B', 'Steam Keys'], ['C', 'Steam Keys'], ['E', 'Not Activated']]);
-  assert.strictEqual(sheetRows[0].status, ''); // spare: trade column left blank
-  assert.match(sheetRows[1].status, /region/);
+  assert.deepStrictEqual(notActivatedRows().map((r) => [r.key, r.sheet]), [['B', 'Steam Keys'], ['C', 'Steam Keys'], ['E', 'Not Activated']]);
+  assert.strictEqual(notActivatedRows()[0].status, ''); // spare: trade column left blank
+  assert.match(notActivatedRows()[1].status, /region/);
+  // Activated keys get their own tab, with date and store.
+  assert.deepStrictEqual(sheetRows.filter((r) => r.sheet === 'Activated').map((r) => r.key), ['A']);
+  assert.match(sheetRows.find((r) => r.key === 'A').status, /^Activated \d\d-\w{3}-\d{4} \(Fanatical\)$/);
   assert.match(logs[logs.length - 1], /rate limit.*3 key\(s\) left/);
 
   // Run 2 while paused: does nothing.
@@ -81,7 +88,8 @@ const log = (m) => logs.push(m);
   store.activationLock = null;
   await processQueue(log);
   assert.deepStrictEqual(getQueue(), []);
-  assert.deepStrictEqual(sheetRows.slice(3).map((r) => [r.key, r.sheet]), [['D', 'Not Activated']]);
+  assert.deepStrictEqual(notActivatedRows().slice(3).map((r) => [r.key, r.sheet]), [['D', 'Not Activated']]);
+  assert.deepStrictEqual(sheetRows.filter((r) => r.sheet === 'Activated').map((r) => r.key), ['A', 'F', 'G']);
   assert.ok(logs.some((m) => /OK +TF/.test(m)) && logs.some((m) => /OK +TG/.test(m)));
 
   // A key that is "rate limited" every time is reported after the retry cap, not retried forever.
@@ -89,7 +97,7 @@ const log = (m) => logs.push(m);
   enqueueKeys([{ title: 'TH', key: 'H' }]);
   for (let i = 0; i < 4; i++) { store.rateLimitedUntil = 0; await processQueue(log); }
   assert.deepStrictEqual(getQueue(), []);
-  assert.deepStrictEqual(sheetRows.slice(-1).map((r) => [r.key, r.sheet]), [['H', 'Not Activated']]);
+  assert.deepStrictEqual(notActivatedRows().slice(-1).map((r) => [r.key, r.sheet]), [['H', 'Not Activated']]);
 
   // Stale session: refresh the tab (up to twice in 10 minutes), keep the key queued.
   replies.S = ['STALE', 'STALE', 'STALE', ok('Game S')];
@@ -122,6 +130,27 @@ const log = (m) => logs.push(m);
   store.rateLimitedUntil = Date.now() + 60000;
   assert.match(await ensureWorker(50), /rate limit/);
   assert.strictEqual(opened.length, 1);
+
+  // Edition keys for an owned base game: Steam decides only if some DLC is missing.
+  assert.ok(editionLike('Ancestors Legacy - Complete Edition') && editionLike('Foo GOTY') && editionLike('Bar + Season Pass'));
+  assert.ok(!editionLike('Planescape: Torment: Enhanced Edition') && !editionLike('Mouthwashing'));
+  const owned = new Set([620590, 100, 101, 200, 300]);
+  const keys = [
+    { title: 'Ancestors Legacy - Complete Edition', appid: 620590 }, // owns base, none of 4 DLC -> activate
+    { title: 'Owned All - Complete Edition', appid: 100 },           // owns base and its DLC -> spare
+    { title: 'No DLC Deluxe Edition', appid: 200 },                  // game has no DLC -> spare
+    { title: 'Plain Game', appid: 300 },                             // not edition-like -> spare, no lookup
+  ];
+  const toActivate = await editionsToActivate(keys, owned, log);
+  assert.deepStrictEqual([...toActivate.map((k) => k.appid)], [620590]);
+  assert.match(logs.find((m) => /Ancestors Legacy - Complete/.test(m)), /not 4 of its 4 DLC/);
+  assert.ok(logs.some((m) => /all 1 of its DLC, so it's a spare/.test(m)));
+
+  // Local log: capped at 1000 lines, entries older than 30 days dropped.
+  store.redeemLog = [{ t: 0, m: 'ancient' }];
+  for (let i = 0; i < 1005; i++) recordLog('line ' + i);
+  assert.strictEqual(store.redeemLog.length, 1000);
+  assert.strictEqual(store.redeemLog[0].m, 'line 5');
 
   console.log('activation queue ok');
 })().catch((e) => { console.error(e); process.exit(1); });
