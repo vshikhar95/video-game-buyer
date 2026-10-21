@@ -18,6 +18,7 @@ Both use your Steam login in the same browser (store.steampowered.com) to know w
 Opens a panel on a bundle page that prices every game you don't own against its Steam India historical low (from [IsThereAnyDeal](https://isthereanydeal.com/)), in INR:
 
 - **Fixed bundles:** per tier, the cost per unowned game, and which games have sold for less on Steam India.
+- Owned games sold as an edition note how much of the base game's DLC you're missing ("base owned; 4 of 4 DLC not owned").
 - **Pick & mix:** the price per pick for taking every unowned pick, and a recommendation that skips picks whose India lows are below the per-pick cost. Filler picks are suggested when a bigger tier is cheaper overall.
 - **Fanatical pick & mix cart:** tick picks (or use All / Unowned / Recommended / None), check the live cost, then **Update cart** adds and removes picks in your Fanatical basket to match. Checkout stays manual.
 
@@ -29,13 +30,13 @@ Prices are converted at the live USD rate plus a 5% card/PayPal markup (change i
 
 Click **Scan & Redeem Keys** on a supported page. For each Steam key you haven't revealed yet, it:
 
-1. checks whether you already own the game on Steam;
+1. checks whether you already own the game on Steam. Edition keys ("Complete Edition", "GOTY", "+ Season Pass"...) for a game you own are checked against the base game's DLC: if you're missing any, the key is activated so Steam grants what's missing (or reports it as owned, making it a spare);
 2. owned: reveals the key and logs it (with region and expiry, where the store provides them) to a Google Sheet for trading;
 3. not owned: reveals the key and adds it to an **activation queue**, base games first, then DLC. A Steam activation tab that's already open picks the keys up immediately; otherwise one opens in a background tab.
 
 Steam's activation page works through the queue on its own, sending each key the same way Steam's own page does (no extra extension needed):
 
-- activated: done;
+- activated: written to the sheet's **Activated** tab with the date and store, so every revealed key ends up somewhere in the sheet;
 - already owned or not available in your region: the key is still unused, so it goes to the sheet's main tab as a tradeable spare;
 - needs the base game: retried once after the rest of the queue;
 - invalid or already used: logged to the "Not Activated" tab;
@@ -43,6 +44,8 @@ Steam's activation page works through the queue on its own, sending each key the
 - stale Steam session: the tab refreshes itself (which renews the session) and continues; after two refreshes in ten minutes it stops and asks you to log in.
 
 Keeping a Steam activation tab pinned makes it fully hands-off while the browser runs.
+
+Everything the redeemer reports is also kept in a local log (last 1000 lines, 30 days, in Tampermonkey storage). The **Log** button next to Scan & Redeem Keys, and on the Steam tab's panel, shows it with a Copy button.
 
 Already-revealed keys and non-Steam keys are skipped. On first run it asks for the Google Apps Script web app URL and its ingest token. These are kept in Tampermonkey's storage, not in this repo.
 
